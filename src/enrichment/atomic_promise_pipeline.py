@@ -97,19 +97,25 @@ def parse_json_array(text):
         return []
 
 
-def to_atomic_promises(category, promise_text):
+def to_atomic_promises(category, promise_text, retries=3):
     prompt = build_prompt(category, promise_text)
-    try:
-        completion = client.chat.completions.create(
-            model=MODEL,
-            temperature=0,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        result = completion.choices[0].message.content
-        return parse_json_array(result)
-    except Exception as e:
-        print("API error:", e)
-        return []
+    
+    for attempt in range(retries):
+        try:
+            completion = client.chat.completions.create(
+                model=MODEL,
+                temperature=0,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            result = completion.choices[0].message.content
+            parsed = parse_json_array(result)
+            if parsed:
+                return parsed
+        except Exception as e:
+            print(f"Retry {attempt+1} failed:", e)
+            time.sleep(2)
+
+    return []
 
 
 def load_partial_state():
@@ -133,6 +139,13 @@ def save_partial(rows):
     print(f"Saved partial -> {PARTIAL_OUTPUT_PATH} ({len(rows)} rows)")
 
 
+def is_valid_promise(text):
+    if len(text) < 10:
+        return False
+    if text.lower().startswith(("we believe", "it is important", "there is a need")):
+        return False
+    return True
+
 def main():
     df = pd.read_csv(INPUT_PATH)
     rows, done_ids = load_partial_state()
@@ -148,17 +161,26 @@ def main():
 
         atomic_items = to_atomic_promises(category, promise_text)
         if not atomic_items:
-            # Fallback: preserve original row if model fails to parse.
-            atomic_items = [{"category": category, "clean_promise": promise_text}]
-
-        for item in atomic_items:
             rows.append(
                 {
                     "source_promise_id": source_id,
-                    "category": item.get("category", category) or category,
-                    "clean_promise": item.get("clean_promise", "").strip(),
+                    "category": category,
+                    "clean_promise": promise_text,
+                    "is_atomic": False   # 🔥 important
                 }
             )
+        else: 
+            for item in atomic_items:
+                clean = item.get("clean_promise", "").strip()
+                if not is_valid_promise(clean):
+                    continue
+                rows.append(
+                    {
+                        "source_promise_id": source_id,
+                        "category": item.get("category", category) or category,
+                        "clean_promise": item.get("clean_promise", "").strip(),
+                    }
+                )
 
         done_ids.add(source_id)
         save_partial(rows)
