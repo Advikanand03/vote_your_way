@@ -1,0 +1,10 @@
+beautifulsoup4
+groq
+pandas
+pdf2image
+pdfplumber
+pytesseract
+python-dotenv
+requests
+sentence-transformers
+streamlit
