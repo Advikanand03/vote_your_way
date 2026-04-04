@@ -175,7 +175,7 @@ def main():
                         "is_atomic": True
                     }
                 )
-            added_any = True
+                added_any = True
 
         if not added_any:
             print(f"⚠️ Fallback used for {source_id}")
@@ -195,6 +195,7 @@ def main():
     final_df = pd.DataFrame(rows)
     final_df = final_df[final_df["clean_promise"].str.len() > 0]
     final_df = final_df.drop_duplicates(subset=["source_promise_id", "clean_promise"])
+    final_df = final_df.reset_index(drop=True)
     final_df.insert(0, "atomic_promise_id", [f"A{i}" for i in range(1, len(final_df) + 1)])
     final_df.to_csv(OUTPUT_PATH, index=False)
     print(f"Atomic promise dataset created -> {OUTPUT_PATH}")
