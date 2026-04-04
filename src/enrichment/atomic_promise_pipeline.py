@@ -160,27 +160,33 @@ def main():
         print(f"Processing {source_id}")
 
         atomic_items = to_atomic_promises(category, promise_text)
-        if not atomic_items:
+        added_any = False
+        if atomic_items:
+            for item in atomic_items:
+                clean = item.get("clean_promise", "").strip()
+                if not is_valid_promise(clean):
+                    continue
+
+                rows.append(
+                    {
+                        "source_promise_id": source_id,
+                        "category": item.get("category", category) or category,
+                        "clean_promise": clean,
+                        "is_atomic": True
+                    }
+                )
+            added_any = True
+
+        if not added_any:
+            print(f"⚠️ Fallback used for {source_id}")
             rows.append(
                 {
                     "source_promise_id": source_id,
                     "category": category,
                     "clean_promise": promise_text,
-                    "is_atomic": False   # 🔥 important
+                    "is_atomic": False
                 }
             )
-        else: 
-            for item in atomic_items:
-                clean = item.get("clean_promise", "").strip()
-                if not is_valid_promise(clean):
-                    continue
-                rows.append(
-                    {
-                        "source_promise_id": source_id,
-                        "category": item.get("category", category) or category,
-                        "clean_promise": item.get("clean_promise", "").strip(),
-                    }
-                )
 
         done_ids.add(source_id)
         save_partial(rows)
@@ -188,11 +194,10 @@ def main():
 
     final_df = pd.DataFrame(rows)
     final_df = final_df[final_df["clean_promise"].str.len() > 0]
-    final_df = final_df.drop_duplicates(subset=["category", "clean_promise"]).reset_index(drop=True)
+    final_df = final_df.drop_duplicates(subset=["source_promise_id", "clean_promise"])
     final_df.insert(0, "atomic_promise_id", [f"A{i}" for i in range(1, len(final_df) + 1)])
     final_df.to_csv(OUTPUT_PATH, index=False)
     print(f"Atomic promise dataset created -> {OUTPUT_PATH}")
-
 
 if __name__ == "__main__":
     main()
