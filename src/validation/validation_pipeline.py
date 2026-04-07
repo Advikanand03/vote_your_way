@@ -27,6 +27,10 @@ PARTIAL_SAVE_INTERVAL = 10
 PARTIAL_OUTPUT_PATH = "outputs/final_results_partial.csv"
 FINAL_OUTPUT_PATH = "outputs/final_results.csv"
 
+# Additional config
+USE_CROSS_ENCODER = False
+USE_LLM_FILTER = True
+
 try:
     from sentence_transformers import SentenceTransformer, util
     EMBEDDINGS_AVAILABLE = True
@@ -44,8 +48,49 @@ df = pd.read_csv("data/processed/final_enriched_dataset.csv")
 # -------------------------
 # QUERY
 # -------------------------
-def generate_query(promise):
-    return promise + " Karnataka government scheme news"
+def generate_queries(promise):
+    prompt = f"""
+    Generate 4 different search queries for this promise covering:
+    1. launch
+    2. funding
+    3. implementation
+    4. current status
+
+    Promise: {promise}
+
+    Return as a list.
+    """
+    try:
+        res = client.chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        text = res.choices[0].message.content
+        return [q.strip("- ").strip() for q in text.split("\n") if q.strip()]
+    except:
+        return [promise + " Karnataka scheme"]
+# -------------------------
+# LLM FILTER
+# -------------------------
+def filter_evidence(promise, evidence_items):
+    filtered = []
+    for item in evidence_items:
+        prompt = f"""
+        Promise: {promise}
+        Evidence: {item["text"]}
+
+        Does this help determine progress of the promise? Yes or No.
+        """
+        try:
+            res = client.chat.completions.create(
+                model=MODEL,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            if "Yes" in res.choices[0].message.content:
+                filtered.append(item)
+        except:
+            filtered.append(item)
+    return filtered
 
 # -------------------------
 # GOOGLE NEWS
@@ -308,15 +353,19 @@ def process_row(row):
     promise = row["promise_text"]
     print(f"Processing {row['promise_id']}")
 
-    query = generate_query(promise)
+    queries = generate_queries(promise)
 
-    news = get_news(query)
-    govt = get_govt(query)
+    news, govt = [], []
+    for q in queries:
+        news.extend(get_news(q))
+        govt.extend(get_govt(q))
 
     evidence_pool = [{"text": n, "source": "news"} for n in news] + [
         {"text": g, "source": "government"} for g in govt
     ]
     selected_evidence = retrieve_relevant_evidence(promise, evidence_pool, top_k=TOP_K_EVIDENCE)
+    if USE_LLM_FILTER:
+        selected_evidence = filter_evidence(promise, selected_evidence)
 
     stances = []
     for item in selected_evidence:
