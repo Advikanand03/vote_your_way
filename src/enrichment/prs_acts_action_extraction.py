@@ -19,7 +19,7 @@ client = Groq(api_key=GROQ_API_KEY_DIFF)
 
 
 def clean_text(text):
-    """Clean raw bill text by removing OCR noise and normalizing whitespace."""
+    """Clean raw act text by removing OCR noise and normalizing whitespace."""
     if not isinstance(text, str):
         return ""
 
@@ -43,7 +43,7 @@ def chunk_text(text, max_words=800):
 def build_prompt(chunk):
     """Build the LLM prompt for extracting high-level policy actions."""
     return f"""
-You are analyzing a government bill.
+You are analyzing a government act.
 
 Your task is to extract a SMALL set of HIGH-LEVEL policy actions.
 
@@ -174,8 +174,8 @@ Actions:
         return list(dict.fromkeys(actions))
 
 
-def extract_actions_from_text(text):
-    """Extract high-level policy actions from bill text (single-call version)."""
+def extract_actions_from_text(text, timeout_seconds=60):
+    """Extract high-level policy actions from act text (single-call version)."""
 
     if not text or len(text.strip()) == 0:
         return []
@@ -188,10 +188,14 @@ def extract_actions_from_text(text):
             model=MODEL,
             temperature=0,
             messages=[{"role": "user", "content": prompt}],
+            timeout=timeout_seconds,
         )
 
         output = response.choices[0].message.content
+        print(f"\n[DEBUG] Raw LLM output:\n{output}\n")
+        
         actions = parse_json_array(output)
+        print(f"[DEBUG] Parsed actions: {actions}")
 
         # Simple grounding filter
         filtered_actions = []
@@ -214,96 +218,125 @@ def extract_actions_from_text(text):
         return filtered_actions
 
     except Exception as e:
-        print("Error:", e)
+        print(f"[ERROR] Exception in extract_actions_from_text: {e}")
+        import traceback
+        traceback.print_exc()
         return []
 
 
-def process_file(input_path, output_path, text_column="bill_text", min_text_length=100, skip_filled=True):
+def process_file(input_path, output_path, text_column="act_text", min_text_length=100, skip_filled=True, limit=None):
     """
-    Process bill text to extract actions.
+    Process act text to extract actions.
     
     Args:
-        input_path: Path to input CSV with bill text
+        input_path: Path to input CSV with act text
         output_path: Path to output CSV with actions
         text_column: Name of the column containing text to process
         min_text_length: Minimum text length to process
         skip_filled: (Deprecated) This parameter is ignored; all rows are processed and overwritten.
+        limit: Max number of rows to process (for testing)
     """
+    print(f"\n[STARTUP] process_file called")
+    print(f"[STARTUP] Input: {input_path}")
+    print(f"[STARTUP] Output: {output_path}")
+    print(f"[STARTUP] Text column: {text_column}")
+    print(f"[STARTUP] API Key set: {bool(GROQ_API_KEY_DIFF)}")
+    if limit:
+        print(f"[STARTUP] LIMIT: Processing only first {limit} rows (TEST MODE)\n")
+    else:
+        print()
+    
     df_input = pd.read_csv(input_path)
+    print(f"[INFO] Loaded {len(df_input)} rows from input")
     
     # Validate that the text column exists
     if text_column not in df_input.columns:
         raise ValueError(f"Column '{text_column}' not found. Available columns: {list(df_input.columns)}")
     
-    # Load existing output if file exists
-    if os.path.exists(output_path):
-        df_output = pd.read_csv(output_path)
-        print(f"Loading existing output: {output_path}")
-    else:
-        df_output = df_input.copy()
-        if "actions" not in df_output.columns:
-            df_output["actions"] = None
-        print(f"Creating new output file")
+    # Always use the input file as base (it has act_text)
+    # The output file is only for reference if we want to resume
+    df_output = df_input.copy()
+    if "actions" not in df_output.columns:
+        df_output["actions"] = None
+    
+    print(f"[INFO] Starting fresh from input file (which has act_text column)")
     
     # Identify rows to process (all rows; overwrite existing actions)
     rows_to_process = df_output.index.tolist()
-    print(f"Processing all {len(rows_to_process)} rows (overwriting existing actions)...")
+    if limit:
+        rows_to_process = rows_to_process[:limit]
+    
+    print(f"[INFO] Processing {len(rows_to_process)} rows (overwriting existing actions)...\n")
     
     # Process only the rows that need it
-    for idx in tqdm(rows_to_process, desc="Processing bills"):
+    for idx in tqdm(rows_to_process, desc="Processing acts"):
         row = df_output.iloc[idx]
         text = clean_text(row.get(text_column, ""))
         
+        print(f"\n[ROW {idx}] Title: {row.get('title')[:50]}... | Text length: {len(text)}")
+        
         if len(text) < min_text_length:
+            print(f"[ROW {idx}] SKIPPED: Text too short ({len(text)} < {min_text_length})")
             df_output.at[idx, "actions"] = "[]"
             continue
         
+        print(f"[ROW {idx}] Calling LLM...")
         actions = extract_actions_from_text(text)
         df_output.at[idx, "actions"] = json.dumps(actions if isinstance(actions, list) else [])
+        print(f"[ROW {idx}] Actions stored: {actions}")
     
     df_output.to_csv(output_path, index=False)
-    print(f"Saved extracted actions to: {output_path}")
+    print(f"\n[SUCCESS] Saved extracted actions to: {output_path}")
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Extract high-level policy actions from PRS bill text using an LLM."
+        description="Extract high-level policy actions from PRS act text using an LLM."
     )
     parser.add_argument(
         "--input",
-        default="data/prs_datasets/prs_karnataka_bills_processed_partial.csv",
-        help="Input CSV path containing bill text.",
+        default="data/prs_datasets/prs_karnataka_acts_processed.csv",
+        help="Input CSV path containing act text (output from prs_pdf_processor_acts.py).",
     )
     parser.add_argument(
         "--output",
-        default="data/prs_datasets/prs_karnataka_bills_with_actions.csv",
+        default="data/prs_datasets/prs_karnataka_acts_with_actions.csv",
         help="Output CSV path for extracted actions.",
     )
     parser.add_argument(
         "--text-column",
-        default="bill_text",
-        help="Name of the column containing text to process (default: bill_text).",
+        default="act_text",
+        help="Name of the column containing text to process (default: act_text).",
     )
     parser.add_argument(
         "--min-text-length",
         type=int,
         default=100,
-        help="Minimum bill text length to process.",
+        help="Minimum act text length to process.",
     )
     parser.add_argument(
         "--fill-all",
         action="store_true",
         help="Process all rows (default: skip rows with non-empty actions).",
     )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Limit to first N rows (for testing)",
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
+    print("[STARTUP] Script started")
     args = parse_args()
+    print(f"[STARTUP] Arguments parsed: input={args.input}, output={args.output}")
     process_file(
         args.input,
         args.output,
         text_column=args.text_column,
         min_text_length=args.min_text_length,
-        skip_filled=not args.fill_all
+        skip_filled=not args.fill_all,
+        limit=args.limit
     )
