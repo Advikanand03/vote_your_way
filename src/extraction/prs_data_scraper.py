@@ -1,21 +1,16 @@
 """
-PRS India – Karnataka Bills & Acts Scraper
-==========================================
-Scrapes:
-  • Bills  → https://prsindia.org/bills/states?title=&state=Karnataka&year=<year>
-  • Acts   → https://prsindia.org/acts/states?title=&state=Karnataka&year=<year>
+PRS India – Karnataka Bills & Acts Scraper (Robust Version)
+==========================================================
 
-Output  : data/prs_datasets/prs_karnataka_bills.csv  &  data/prs_datasets/prs_karnataka_acts.csv
-          (index only: title + pdf_url + metadata; no PDF text here)
-Requires: pip install requests beautifulsoup4
+Improvements:
+- Safe pagination (no infinite loops)
+- Deduplication across pages
+- Faster scraping
+- Covers BOTH bills and acts for 2023–2026
 
-Usage examples
---------------
-# Scrape bills for 2024–2026 and acts for 2023–2025:
-python src/extraction/prs_data_scraper.py
-
-# Or import and call directly:
-#   from src.extraction.prs_data_scraper import scrape_bills, scrape_acts
+Output:
+  data/prs_datasets/prs_karnataka_bills.csv
+  data/prs_datasets/prs_karnataka_acts.csv
 """
 
 import csv
@@ -38,20 +33,19 @@ BASE_BILLS = "https://prsindia.org/bills/states"
 BASE_ACTS  = "https://prsindia.org/acts/states"
 PRS_OUTPUT_DIR = "data/prs_datasets"
 
-BILL_YEARS = list(range(2024, 2027))   # 2024, 2025, 2026
-ACT_YEARS  = list(range(2023, 2026))   # 2023, 2024, 2025
+YEARS = list(range(2023, 2027))  # 2023–2026
 
 STATE      = "Karnataka"
-DELAY_SEC  = 1.5   # polite delay between requests
+DELAY_SEC  = 0.5   # polite delay between requests
 
 def _clean_text(s: str) -> str:
     return " ".join((s or "").split())
 
 # ── Core helpers ─────────────────────────────────────────────────────────────
 
-def fetch_page(base_url: str, state: str, year: int) -> BeautifulSoup:
-    """Fetch one results page and return a BeautifulSoup object."""
-    params = {"title": "", "state": state, "year": year}
+def fetch_page(base_url: str, state: str, year: int, page: int = 1) -> BeautifulSoup:
+    """Fetch one results page and return a BeautifulSoup object. Note: page numbering starts at 1."""
+    params = {"title": "", "state": state, "year": year, "page": page}
     last_err = None
     for _ in range(3):
         try:
@@ -109,39 +103,81 @@ def parse_items(soup: BeautifulSoup, year: int, state: str, base_url: str) -> li
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def scrape_bills(
-    state: str = STATE,
-    years: list[int] = None,
-    delay: float = DELAY_SEC,
-) -> list[dict]:
-    """Scrape Bills pages and return a list of dicts."""
-    years = years or BILL_YEARS
+def scrape_bills(state: str = STATE, years: list[int] = None, delay: float = DELAY_SEC) -> list[dict]:
+    years = years or YEARS
     all_rows = []
+
     for year in years:
         print(f"  [bills] {state} {year} …", end=" ", flush=True)
-        soup = fetch_page(BASE_BILLS, state, year)
-        rows = parse_items(soup, year, state, BASE_BILLS)
-        print(f"{len(rows)} found")
-        all_rows.extend(rows)
-        time.sleep(delay)
+
+        page = 1
+        max_pages = 20
+        total = 0
+        seen_titles = set()
+
+        while page <= max_pages:
+            soup = fetch_page(BASE_BILLS, state, year, page)
+            rows = parse_items(soup, year, state, BASE_BILLS)
+
+            if not rows:
+                break
+
+            new_rows = []
+            for r in rows:
+                if r["title"] not in seen_titles:
+                    seen_titles.add(r["title"])
+                    new_rows.append(r)
+
+            if not new_rows:
+                break
+
+            total += len(new_rows)
+            all_rows.extend(new_rows)
+
+            page += 1
+            time.sleep(delay)
+
+        print(f"{total} found")
+
     return all_rows
 
 
-def scrape_acts(
-    state: str = STATE,
-    years: list[int] = None,
-    delay: float = DELAY_SEC,
-) -> list[dict]:
-    """Scrape Acts pages and return a list of dicts."""
-    years = years or ACT_YEARS
+def scrape_acts(state: str = STATE, years: list[int] = None, delay: float = DELAY_SEC) -> list[dict]:
+    years = years or YEARS
     all_rows = []
+
     for year in years:
         print(f"  [acts]  {state} {year} …", end=" ", flush=True)
-        soup = fetch_page(BASE_ACTS, state, year)
-        rows = parse_items(soup, year, state, BASE_ACTS)
-        print(f"{len(rows)} found")
-        all_rows.extend(rows)
-        time.sleep(delay)
+
+        page = 1
+        max_pages = 20
+        total = 0
+        seen_titles = set()
+
+        while page <= max_pages:
+            soup = fetch_page(BASE_ACTS, state, year, page)
+            rows = parse_items(soup, year, state, BASE_ACTS)
+
+            if not rows:
+                break
+
+            new_rows = []
+            for r in rows:
+                if r["title"] not in seen_titles:
+                    seen_titles.add(r["title"])
+                    new_rows.append(r)
+
+            if not new_rows:
+                break
+
+            total += len(new_rows)
+            all_rows.extend(new_rows)
+
+            page += 1
+            time.sleep(delay)
+
+        print(f"{total} found")
+
     return all_rows
 
 
