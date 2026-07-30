@@ -19,7 +19,7 @@ client = Groq(api_key=GROQ_API_KEY)
 # -------------------------
 # LOAD YOUR DATASET
 # -------------------------
-df = pd.read_csv("data/processed/karnataka_inc_promises_cleaned.csv")
+df = pd.read_csv("data/processed/karnataka_inc_promises_atomic.csv")
 
 # -------------------------
 # SAFE JSON PARSER (CRITICAL FIX)
@@ -103,14 +103,21 @@ enriched_rows = []
 
 for i, row in df.iterrows():
 
-    print(f"Processing {row['promise_id']}")
+    # Map atomic dataset columns
+    promise_id = row.get("atomic_promise_id", row.get("promise_id"))
+    promise_text = row.get("clean_promise", row.get("promise_text"))
+    source_id = row.get("source_promise_id", "")
+    category = row.get("category", "")
 
-    extra = enrich_promise(row["promise_text"], row["category"])
+    print(f"Processing {promise_id}")
+
+    extra = enrich_promise(promise_text, category)
 
     enriched_rows.append({
-        "promise_id": row["promise_id"],
-        "category": row["category"],
-        "promise_text": row["promise_text"],
+        "promise_id": promise_id,
+        "source_promise_id": source_id,
+        "category": category,
+        "promise_text": promise_text,
         "sector": extra.get("sector", ""),
         "sub_sector": extra.get("sub_sector", ""),
         "quantifiable": extra.get("quantifiable", "No"),
