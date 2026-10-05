@@ -7,10 +7,10 @@ OUTPUT_PATH = Path("data/processed/aap_2020_initiatives.json")
 
 
 def get_initiative_pages(text):
-    """Return the text belonging to pages 4-7."""
+    """Return the text belonging to pages 4-7, including page markers."""
 
     page4 = re.search(
-        r"={60}\s*PAGE 4\s*={60}\s*(.*?)(?=={60}\s*PAGE 8\s*={60})",
+        r"={60}\s*PAGE 4\s*={60}.*?(?=={60}\s*PAGE 8\s*={60})",
         text,
         re.DOTALL,
     )
@@ -18,7 +18,7 @@ def get_initiative_pages(text):
     if not page4:
         raise ValueError("Could not find pages 4-7 in reconstructed text.")
 
-    return page4.group(1).strip()
+    return page4.group(0).strip()
 
 
 def find_headers(text):
@@ -45,15 +45,25 @@ def find_headers(text):
 
 
 def clean_text(text):
-    """Normalize PDF line wrapping without changing wording."""
+    """Normalize PDF line wrapping and remove page separator markers."""
 
     text = text.strip()
+
+    # Remove reconstructed page separator markers.
+    text = re.sub(
+        r"={60}\s*PAGE\s+\d+\s*={60}",
+        " ",
+        text
+    )
 
     # Replace repeated spaces/tabs.
     text = re.sub(r"[ \t]+", " ", text)
 
     # Join lines caused by PDF text wrapping.
     text = re.sub(r"\s*\n\s*", " ", text)
+
+    # Fix words split around a hyphen by PDF extraction.
+    text = re.sub(r"(\w)-\s+(\w)", r"\1-\2", text)
 
     return text.strip()
 
