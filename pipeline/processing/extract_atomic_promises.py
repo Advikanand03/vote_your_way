@@ -168,6 +168,16 @@ IMPORTANT RULES:
     atomic promise faithfully represents the source text.
 15. It does NOT mean confidence that the political promise will
     actually be fulfilled.
+16. Do not strengthen, weaken, or reinterpret the source.
+17. Preserve the original actor, object, scope, and purpose of the
+    commitment.
+18. Do not convert a future-tense promise into a completed or
+    differently framed claim.
+19. Do not remove meaningful qualifiers, entities, or conditions
+    from the source.
+20. The atomic_promise should remain as close as reasonably possible
+    to the wording of the source while still being atomic.
+21. original_text must be copied verbatim from source_text.
 """
 
 
@@ -193,24 +203,37 @@ Source text:
 Return only the required structured JSON.
 
 For each atomic promise:
-- original_text must quote/paraphrase only the exact source portion
-  from which that atomic promise is derived.
-- atomic_promise must be a concise, faithful representation of
-  that commitment.
-- action should describe the promised action when explicitly
-  identifiable.
-- target_value should contain a numeric target only when the
-  source explicitly provides one.
+
+- original_text MUST be copied verbatim from source_text.
+  It must be a contiguous passage from source_text whenever possible.
+  Do not paraphrase, normalize, shorten, or rewrite it.
+
+- atomic_promise must be a concise but source-faithful formulation
+  of the commitment. Preserve the actor, action, object, scope,
+  conditions, qualifiers, entities, and purpose stated in the source.
+  Do not add implications or conclusions that are not explicitly stated.
+
+- action should describe the promised action when explicitly identifiable.
+
+- target_value should contain a numeric target only when the source
+  explicitly provides one.
+
 - target_unit should describe the unit of that numeric target.
+
 - target_description should be used for non-numeric targets or
   qualitative target conditions.
+
 - timeline_start and timeline_end should be ISO dates only when
   explicit dates are available.
+
 - timeline_text should preserve expressions such as "within 6 months"
   or "over the next 5 years".
+
 - geography_name should only be populated when geography is
   explicitly supported by the source.
+
 - beneficiary should only be populated when explicitly supported.
+
 - responsible_department should only be populated when explicitly
   supported.
 """
@@ -228,42 +251,99 @@ def load_json(path):
         return json.load(file)
 
 
-def extract_from_groq(source):
-    response = client.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {
-                "role": "system",
-                "content": SYSTEM_PROMPT
-            },
-            {
-                "role": "user",
-                "content": build_user_prompt(source)
-            }
-        ],
-        temperature=0,
-        response_format={
-            "type": "json_schema",
-            "json_schema": {
-                "name": "atomic_promise_extraction",
-                "strict": True,
-                "schema": ATOMIC_PROMISE_SCHEMA
-            }
-        }
+def is_retryable_error(error):
+    """
+    Return True for transient Groq/API errors worth retrying.
+    """
+
+    status_code = getattr(error, "status_code", None)
+
+    if status_code in {429, 500, 502, 503, 504}:
+        return True
+
+    error_text = str(error).lower()
+
+    return any(
+        phrase in error_text
+        for phrase in [
+            "rate limit",
+            "over capacity",
+            "service unavailable",
+            "temporarily unavailable",
+            "internal server error",
+            "timeout",
+            "timed out"
+        ]
     )
 
-    content = response.choices[0].message.content
 
-    if not content:
-        raise ValueError(
-            f"Groq returned empty response for "
-            f"{source['source_type']} {source['source_number']}"
-        )
+def extract_from_groq(source, max_attempts=6):
 
-    return json.loads(content)
+    for attempt in range(1, max_attempts + 1):
+
+        try:
+
+            response = client.chat.completions.create(
+                model=MODEL,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": SYSTEM_PROMPT
+                    },
+                    {
+                        "role": "user",
+                        "content": build_user_prompt(source)
+                    }
+                ],
+                temperature=0,
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "atomic_promise_extraction",
+                        "strict": True,
+                        "schema": ATOMIC_PROMISE_SCHEMA
+                    }
+                }
+            )
+
+            content = response.choices[0].message.content
+
+            if not content:
+                raise ValueError(
+                    f"Groq returned empty response for "
+                    f"{source['source_type']} {source['source_number']}"
+                )
+
+            return json.loads(content)
+
+        except Exception as error:
+
+            # Do not retry permanent errors.
+            if not is_retryable_error(error):
+                raise
+
+            # Maximum number of attempts reached.
+            if attempt == max_attempts:
+                raise
+
+            # 2, 4, 8, 16, 32 seconds.
+            wait_seconds = 2 ** attempt
+
+            print(
+                f"Transient Groq error on "
+                f"{source['source_type']} "
+                f"{source['source_number']} "
+                f"(attempt {attempt}/{max_attempts}):"
+            )
+
+            print(f"  {error}")
+            print(f"Retrying in {wait_seconds} seconds...")
+
+            time.sleep(wait_seconds)
 
 
 def validate_result(source, result):
+
     promises = result.get("atomic_promises")
 
     if not isinstance(promises, list):
@@ -298,7 +378,93 @@ def validate_result(source, result):
             )
 
 
+def source_key(source):
+    """
+    Create a unique identifier for a manifesto source.
+    """
+
+    return f"{source['source_type']}:{source['source_number']}"
+
+
+def load_checkpoint():
+    """
+    Load previously completed extraction results if available.
+    """
+
+    if not OUTPUT_PATH.exists():
+        return []
+
+    try:
+
+        data = load_json(OUTPUT_PATH)
+
+    except (json.JSONDecodeError, OSError) as error:
+
+        print(
+            f"WARNING: Could not load existing checkpoint: {error}"
+        )
+
+        print("Starting with an empty checkpoint.")
+
+        return []
+
+    if not isinstance(data, list):
+
+        print(
+            "WARNING: Existing output is not a list. "
+            "Starting fresh."
+        )
+
+        return []
+
+    valid_results = []
+
+    for item in data:
+
+        if not isinstance(item, dict):
+            continue
+
+        source = item.get("source", {})
+
+        if (
+            source.get("source_type")
+            and source.get("source_number") is not None
+            and isinstance(item.get("atomic_promises"), list)
+        ):
+            valid_results.append(item)
+
+    return valid_results
+
+
+def save_checkpoint(results):
+    """
+    Persist all completed results immediately.
+
+    A temporary file is written first so that an interrupted write
+    does not corrupt the existing checkpoint.
+    """
+
+    OUTPUT_PATH.parent.mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+    temporary_path = OUTPUT_PATH.with_suffix(".tmp")
+
+    temporary_path.write_text(
+        json.dumps(
+            results,
+            indent=2,
+            ensure_ascii=False
+        ),
+        encoding="utf-8"
+    )
+
+    temporary_path.replace(OUTPUT_PATH)
+
+
 def process_source(source):
+
     print(
         f"Extracting: "
         f"{source['source_type']} "
@@ -316,6 +482,7 @@ def process_source(source):
         result["atomic_promises"],
         start=1
     ):
+
         promise["source_order"] = order
         promise["geography_id"] = None
 
@@ -385,42 +552,106 @@ def main():
             }
         )
 
-    print(f"Total sources to process: {len(sources)}")
+    print(f"Total sources: {len(sources)}")
     print()
 
-    results = []
+    # -----------------------------
+    # Load checkpoint
+    # -----------------------------
 
-    for index, source in enumerate(sources):
+    results = load_checkpoint()
+
+    completed_keys = {
+        source_key(item["source"])
+        for item in results
+    }
+
+    if results:
+
+        print(
+            f"Loaded checkpoint with "
+            f"{len(results)} completed sources."
+        )
+
+        print()
+
+    skipped_count = 0
+    failed_sources = []
+
+    # -----------------------------
+    # Process sources
+    # -----------------------------
+
+    for source in sources:
+
+        key = source_key(source)
+
+        # Skip sources already successfully processed.
+        if key in completed_keys:
+
+            print(
+                f"Skipping already completed: "
+                f"{source['source_type']} "
+                f"{source['source_number']} - "
+                f"{source['source_title']}"
+            )
+
+            skipped_count += 1
+
+            continue
 
         try:
+
             result = process_source(source)
+
             results.append(result)
+            completed_keys.add(key)
+
+            # IMPORTANT:
+            # Save immediately after every successful source.
+            save_checkpoint(results)
+
+            print(
+                f"Saved checkpoint: "
+                f"{len(results)}/{len(sources)} "
+                f"sources complete."
+            )
+
+            print()
 
         except Exception as error:
+
             print(
                 f"ERROR processing "
                 f"{source['source_type']} "
                 f"{source['source_number']}: {error}"
             )
-            raise
+
+            print()
+            print(
+                "Progress has been saved. "
+                "Run the script again later to resume."
+            )
+
+            failed_sources.append(
+                {
+                    "source_type": source["source_type"],
+                    "source_number": source["source_number"],
+                    "source_title": source["source_title"],
+                    "error": str(error)
+                }
+            )
+
+            # Stop at the failed source.
+            # Previously completed sources remain saved.
+            break
 
         # Avoid hitting API rate limits.
-        if index < len(sources) - 1:
-            time.sleep(2.2)
+        time.sleep(2.2)
 
-    OUTPUT_PATH.parent.mkdir(
-        parents=True,
-        exist_ok=True
-    )
-
-    OUTPUT_PATH.write_text(
-        json.dumps(
-            results,
-            indent=2,
-            ensure_ascii=False
-        ),
-        encoding="utf-8"
-    )
+    # -----------------------------
+    # Final summary
+    # -----------------------------
 
     total_promises = sum(
         len(item["atomic_promises"])
@@ -428,15 +659,61 @@ def main():
     )
 
     print()
+    print("=" * 60)
+    print("EXTRACTION SUMMARY")
+    print("=" * 60)
+
     print(
-        f"Processed {len(results)} manifesto sources."
+        f"Total sources:     {len(sources)}"
     )
+
     print(
-        f"Extracted {total_promises} atomic promises."
+        f"Completed sources: {len(results)}"
     )
+
     print(
-        f"Saved to: {OUTPUT_PATH}"
+        f"Skipped sources:   {skipped_count}"
     )
+
+    print(
+        f"Failed sources:    {len(failed_sources)}"
+    )
+
+    print(
+        f"Atomic promises:   {total_promises}"
+    )
+
+    print(
+        f"Saved to:          {OUTPUT_PATH}"
+    )
+
+    if failed_sources:
+
+        print()
+        print("Failed source:")
+
+        for failed in failed_sources:
+
+            print(
+                f"- {failed['source_type']} "
+                f"{failed['source_number']} - "
+                f"{failed['source_title']}"
+            )
+
+    if len(results) == len(sources):
+
+        print()
+        print(
+            "All manifesto sources processed successfully."
+        )
+
+    else:
+
+        print()
+        print(
+            "Run the script again later to resume "
+            "from the checkpoint."
+        )
 
 
 if __name__ == "__main__":

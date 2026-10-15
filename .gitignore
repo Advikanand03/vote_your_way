@@ -2,3 +2,5 @@ data/
 .env.example
 .env.*
 .env
+
+prompt.txt
